@@ -104,7 +104,7 @@ _META_KEYWORDS = {
     'team':      ['팀', '부서', '소속', '팀명', '부서명', 'team', 'dept', '회사'],
 }
 
-def detect_columns(headers, data):
+def detect_columns(headers, data, max_scale=10):
     """점수 컬럼과 주관식 컬럼을 데이터 값으로 자동 감지"""
     from datetime import datetime as _dt
     score_cols, subj_cols = [], []
@@ -133,8 +133,8 @@ def detect_columns(headers, data):
             if sorted_n == list(range(1, len(sorted_n) + 1)):
                 continue
 
-        # 70% 이상 숫자 + 범위 1-10 → 점수 컬럼 (1~5, 1~7, 1~10 모두 지원)
-        if len(numeric) / len(vals) >= 0.7 and numeric and min(numeric) >= 1 and max(numeric) <= 10:
+        # 70% 이상 숫자 + 범위 1~max_scale → 점수 컬럼
+        if len(numeric) / len(vals) >= 0.7 and numeric and min(numeric) >= 1 and max(numeric) <= max_scale:
             score_cols.append(i)
             continue
 
@@ -319,12 +319,11 @@ def _relative_color(avg, min_avg, max_avg):
     return "#f39c12"       # 중간 → 주황
 
 
-def make_item_bar(headers, stats_list):
+def make_item_bar(headers, stats_list, max_scale=5):
     """문항별 가로 막대 차트"""
     labels, avgs, colors = [], [], []
     all_avgs = [s["avg"] for s in stats_list]
     min_avg, max_avg = min(all_avgs), max(all_avgs)
-    max_scale = max(s["max"] for s in stats_list)  # 실제 척도 최대값 (5점/7점 등)
     for s in stats_list:
         h = headers[s["col"]] if s["col"] < len(headers) else f"Q{s['col']}"
         labels.append(short_q(h))
@@ -344,10 +343,9 @@ def make_item_bar(headers, stats_list):
     return fig
 
 
-def make_category_bar(stats_list):
+def make_category_bar(stats_list, max_scale=5):
     """카테고리별 평균 점수 세로 막대 차트 (방사형 대체)"""
     cats, avgs, colors = [], [], []
-    max_scale = max(s["max"] for s in stats_list) if stats_list else 5
     hi_thr = max_scale * 0.9   # 상위: 전체 척도의 90%
     lo_thr = max_scale * 0.7   # 하위: 전체 척도의 70%
     for cat_name, s, e in _CAT_DEFS:
@@ -375,13 +373,13 @@ def make_category_bar(stats_list):
 
 
 # ── 보고서 텍스트 생성 ───────────────────────────────────────────
-def generate_report(course_name, respondents, headers, stats_list, subj_data, ai_summary):
+def generate_report(course_name, respondents, headers, stats_list, subj_data, ai_summary, max_scale=5):
     sep, thin = "=" * 65, "-" * 65
     lines = [sep, "  만족도 분석 보고서",
              f"  과정명 : {course_name}",
              f"  분석일 : {datetime.now().strftime('%Y-%m-%d %H:%M')}",
              f"  응답자 : {respondents}명", sep, "",
-             "【 객관식 항목별 평균 점수 (5점 만점) 】", thin]
+             f"【 객관식 항목별 평균 점수 ({max_scale}점 만점) 】", thin]
 
     all_avgs = []
     for cat, s, e in _CAT_DEFS:
@@ -392,12 +390,13 @@ def generate_report(course_name, respondents, headers, stats_list, subj_data, ai
         for r in items:
             h = headers[r["col"]] if r["col"] < len(headers) else ""
             lbl = h.split(". ", 1)[1] if ". " in str(h) else str(h)
-            bar = "█" * round(r["avg"]) + "░" * (5 - round(r["avg"]))
+            filled = round(r["avg"] / max_scale * 5)   # 5칸 기준 막대 표시
+            bar = "█" * filled + "░" * (5 - filled)
             lines.append(f"    {r['avg']:.2f}  {bar}  {lbl}")
             all_avgs.append(r["avg"])
 
     if all_avgs:
-        lines += ["", thin, f"  전체 평균: {statistics.mean(all_avgs):.2f} / 5.00", sep, ""]
+        lines += ["", thin, f"  전체 평균: {statistics.mean(all_avgs):.2f} / {max_scale}.00", sep, ""]
 
     lines += ["【 주관식 응답 원문 】", thin]
     for texts, label, _ in subj_data:
@@ -421,6 +420,22 @@ with st.form("analyze_form"):
         help="Google Forms에서 내보낸 Excel 파일을 올려주세요.",
     )
     course_name = st.text_input("과정명", placeholder="예: AI 기반 업무방식 전환 실무 (AI-DLC 입문)")
+    col_scale, col_custom = st.columns([3, 1])
+    with col_scale:
+        scale_option = st.radio(
+            "점수 척도",
+            options=["5점", "7점", "10점", "직접 입력"],
+            index=0,
+            horizontal=True,
+            help="설문에서 사용한 점수 척도를 선택하세요.",
+        )
+    with col_custom:
+        custom_scale = st.number_input(
+            "최대 점수",
+            min_value=2, max_value=100, value=5, step=1,
+            label_visibility="visible",
+            disabled=(scale_option != "직접 입력"),
+        )
     form_submitted = st.form_submit_button("🔍 분석 시작", type="primary", use_container_width=True)
 
 # ── 폼 제출 시 분석 실행 → session_state 저장 ─────────────────────
@@ -430,13 +445,17 @@ if form_submitted:
     elif not course_name:
         st.warning("과정명을 입력해주세요.")
     else:
+        # 선택한 척도 최대값 결정
+        _scale_map = {"5점": 5, "7점": 7, "10점": 10}
+        max_scale = _scale_map.get(scale_option, int(custom_scale))
+
         with st.spinner("데이터 로드 및 컬럼 감지 중…"):
             headers, data = load_excel(uploaded.read())
             respondents = len(data)
-            score_cols, subj_cols = detect_columns(headers, data)
+            score_cols, subj_cols = detect_columns(headers, data, max_scale)
 
         if not score_cols:
-            st.error("점수 컬럼(1~5점 숫자)을 찾지 못했습니다. 파일 형식을 확인해주세요.")
+            st.error(f"점수 컬럼(1~{max_scale}점 숫자)을 찾지 못했습니다. 파일 형식을 확인해주세요.")
             st.stop()
 
         stats_list = score_stats(data, score_cols)
@@ -461,6 +480,7 @@ if form_submitted:
             'subj_data': subj_data,
             'subj_cols': subj_cols,
             'ai_summary': ai_summary,
+            'max_scale': max_scale,
         }
 
 # ── 결과 표시 (session_state 기반 → pills 클릭 후에도 유지) ────────
@@ -473,6 +493,7 @@ if '_analysis' in st.session_state:
     subj_data    = r['subj_data']
     subj_cols    = r['subj_cols']
     ai_summary   = r['ai_summary']
+    max_scale    = r['max_scale']
 
     st.success(f"✅ 분석 완료 — 응답자 {respondents}명 / 점수 문항 {len(stats_list)}개 / 주관식 {len(subj_cols)}개")
     st.divider()
@@ -480,7 +501,7 @@ if '_analysis' in st.session_state:
     all_avgs = [s["avg"] for s in stats_list]
     overall  = round(statistics.mean(all_avgs), 2) if all_avgs else 0
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("전체 평균",  f"{overall:.2f} / 5.00")
+    c1.metric("전체 평균",  f"{overall:.2f} / {max_scale}.00")
     c2.metric("응답자 수",  f"{respondents}명")
     c3.metric("최고 항목",  f"{max(all_avgs):.2f}" if all_avgs else "-")
     c4.metric("최저 항목",  f"{min(all_avgs):.2f}" if all_avgs else "-")
@@ -488,17 +509,17 @@ if '_analysis' in st.session_state:
 
     # ── 1. 객관식 점수 ────────────────────────────────────────
     st.subheader("📊 객관식 항목별 평균 점수")
-    cat_fig = make_category_bar(stats_list)
+    cat_fig = make_category_bar(stats_list, max_scale)
     if cat_fig:
         col_item, col_cat = st.columns([3, 2])
         with col_item:
             st.caption("문항별 점수")
-            st.plotly_chart(make_item_bar(headers, stats_list), use_container_width=True)
+            st.plotly_chart(make_item_bar(headers, stats_list, max_scale), use_container_width=True)
         with col_cat:
             st.caption("카테고리별 평균")
             st.plotly_chart(cat_fig, use_container_width=True)
     else:
-        st.plotly_chart(make_item_bar(headers, stats_list), use_container_width=True)
+        st.plotly_chart(make_item_bar(headers, stats_list, max_scale), use_container_width=True)
 
     with st.expander("📋 상세 점수 테이블", expanded=False):
         rows_tbl = [{"문항": headers[s["col"]] if s["col"] < len(headers) else "",
@@ -555,7 +576,7 @@ if '_analysis' in st.session_state:
     st.divider()
 
     # ── 4. 보고서 다운로드 ────────────────────────────────────
-    report_txt = generate_report(course_name, respondents, headers, stats_list, subj_data, ai_summary)
+    report_txt = generate_report(course_name, respondents, headers, stats_list, subj_data, ai_summary, max_scale)
     st.download_button(
         "⬇️ 보고서 다운로드 (.txt)",
         data=report_txt.encode("utf-8"),
