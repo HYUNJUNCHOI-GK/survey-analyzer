@@ -31,8 +31,10 @@ def check_password():
     if st.session_state.get("authenticated"):
         return True
     st.title("🔐 교육 만족도 분석")
-    pw = st.text_input("접속 비밀번호", type="password")
-    if st.button("확인", type="primary"):
+    with st.form("login_form"):
+        pw = st.text_input("접속 비밀번호", type="password")
+        submitted = st.form_submit_button("확인", type="primary", use_container_width=True)
+    if submitted:
         if pw == correct:
             st.session_state.authenticated = True
             st.rerun()
@@ -357,111 +359,109 @@ def generate_report(course_name, respondents, headers, stats_list, subj_data, ai
 st.title("📊 교육 만족도 설문 분석")
 st.caption("Google Forms Excel 파일을 업로드하면 자동으로 분석 보고서를 생성합니다.")
 
-uploaded = st.file_uploader("📂 설문 Excel 파일 업로드 (.xlsx)", type=["xlsx"])
-course_name = st.text_input("과정명", placeholder="예: AI 기반 업무방식 전환 실무 (AI-DLC 입문)")
+with st.form("analyze_form"):
+    uploaded = st.file_uploader("📂 설문 Excel 파일 업로드 (.xlsx)", type=["xlsx"])
+    course_name = st.text_input("과정명", placeholder="예: AI 기반 업무방식 전환 실무 (AI-DLC 입문)")
+    form_submitted = st.form_submit_button("🔍 분석 시작", type="primary", use_container_width=True)
 
-if uploaded and course_name:
-    if st.button("🔍 분석 시작", type="primary", use_container_width=True):
+if form_submitted and uploaded and course_name:
 
-        with st.spinner("데이터 로드 및 컬럼 감지 중…"):
-            headers, data = load_excel(uploaded.read())
-            respondents = len(data)
-            score_cols, subj_cols = detect_columns(headers, data)
+    with st.spinner("데이터 로드 및 컬럼 감지 중…"):
+        headers, data = load_excel(uploaded.read())
+        respondents = len(data)
+        score_cols, subj_cols = detect_columns(headers, data)
 
-        if not score_cols:
-            st.error("점수 컬럼(1~5점 숫자)을 찾지 못했습니다. 파일 형식을 확인해주세요.")
-            st.stop()
+    if not score_cols:
+        st.error("점수 컬럼(1~5점 숫자)을 찾지 못했습니다. 파일 형식을 확인해주세요.")
+        st.stop()
 
-        stats_list = score_stats(data, score_cols)
+    stats_list = score_stats(data, score_cols)
+    subj_data = [(get_subj(data, col), label, h) for col, label, h in subj_cols]
 
-        # 주관식 데이터: (응답 리스트, 라벨, 헤더)
-        subj_data = [(get_subj(data, col), label, h) for col, label, h in subj_cols]
-        all_texts = [t for texts, _, _ in subj_data for t in texts]
-
-        # AI 분석
-        ai_summary = "(AI 분석 생략)"
-        if use_ai:
-            if not api_key:
-                ai_summary = "⚠️ API Key를 입력하면 AI 분석을 사용할 수 있습니다."
-            else:
-                with st.spinner("Claude AI 분석 중… (10~20초 소요)"):
-                    try:
-                        ai_summary = call_claude(course_name, subj_data, api_key)
-                    except Exception as e:
-                        ai_summary = f"⚠️ AI 분석 실패: {e}"
-
-        # ── 요약 지표 ─────────────────────────────────────────────
-        st.success(f"✅ 분석 완료 — 응답자 {respondents}명 / 점수 문항 {len(stats_list)}개 / 주관식 {len(subj_cols)}개")
-        st.divider()
-
-        all_avgs = [s["avg"] for s in stats_list]
-        overall = round(statistics.mean(all_avgs), 2) if all_avgs else 0
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("전체 평균", f"{overall:.2f} / 5.00")
-        c2.metric("응답자 수", f"{respondents}명")
-        c3.metric("최고 항목", f"{max(all_avgs):.2f}" if all_avgs else "-")
-        c4.metric("최저 항목", f"{min(all_avgs):.2f}" if all_avgs else "-")
-        st.divider()
-
-        # ── 1. 객관식 점수 ────────────────────────────────────────
-        st.subheader("📊 객관식 항목별 평균 점수")
-        cat_fig = make_category_bar(stats_list)
-        if cat_fig:
-            col_item, col_cat = st.columns([3, 2])
-            with col_item:
-                st.caption("문항별 점수")
-                st.plotly_chart(make_item_bar(headers, stats_list), use_container_width=True)
-            with col_cat:
-                st.caption("카테고리별 평균")
-                st.plotly_chart(cat_fig, use_container_width=True)
+    # AI 분석
+    ai_summary = "(AI 분석 생략)"
+    if use_ai:
+        if not api_key:
+            ai_summary = "⚠️ API Key를 입력하면 AI 분석을 사용할 수 있습니다."
         else:
+            with st.spinner("Claude AI 분석 중… (10~20초 소요)"):
+                try:
+                    ai_summary = call_claude(course_name, subj_data, api_key)
+                except Exception as e:
+                    ai_summary = f"⚠️ AI 분석 실패: {e}"
+
+    # ── 요약 지표 ─────────────────────────────────────────────
+    st.success(f"✅ 분석 완료 — 응답자 {respondents}명 / 점수 문항 {len(stats_list)}개 / 주관식 {len(subj_cols)}개")
+    st.divider()
+
+    all_avgs = [s["avg"] for s in stats_list]
+    overall = round(statistics.mean(all_avgs), 2) if all_avgs else 0
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("전체 평균", f"{overall:.2f} / 5.00")
+    c2.metric("응답자 수", f"{respondents}명")
+    c3.metric("최고 항목", f"{max(all_avgs):.2f}" if all_avgs else "-")
+    c4.metric("최저 항목", f"{min(all_avgs):.2f}" if all_avgs else "-")
+    st.divider()
+
+    # ── 1. 객관식 점수 ────────────────────────────────────────
+    st.subheader("📊 객관식 항목별 평균 점수")
+    cat_fig = make_category_bar(stats_list)
+    if cat_fig:
+        col_item, col_cat = st.columns([3, 2])
+        with col_item:
+            st.caption("문항별 점수")
             st.plotly_chart(make_item_bar(headers, stats_list), use_container_width=True)
+        with col_cat:
+            st.caption("카테고리별 평균")
+            st.plotly_chart(cat_fig, use_container_width=True)
+    else:
+        st.plotly_chart(make_item_bar(headers, stats_list), use_container_width=True)
 
-        with st.expander("📋 상세 점수 테이블", expanded=False):
-            rows_tbl = [{"문항": headers[s["col"]] if s["col"] < len(headers) else "",
-                         "평균": s["avg"], "표준편차": s["stdev"],
-                         "최저": s["min"], "최고": s["max"], "응답수": s["count"]}
-                        for s in stats_list]
-            st.dataframe(pd.DataFrame(rows_tbl), use_container_width=True, hide_index=True)
+    with st.expander("📋 상세 점수 테이블", expanded=False):
+        rows_tbl = [{"문항": headers[s["col"]] if s["col"] < len(headers) else "",
+                     "평균": s["avg"], "표준편차": s["stdev"],
+                     "최저": s["min"], "최고": s["max"], "응답수": s["count"]}
+                    for s in stats_list]
+        st.dataframe(pd.DataFrame(rows_tbl), use_container_width=True, hide_index=True)
 
-        st.divider()
+    st.divider()
 
-        # ── 2. 주관식 응답 + 키워드 ──────────────────────────────
-        st.subheader("💬 주관식 응답")
-        if not subj_cols:
-            st.info("주관식 응답 컬럼을 찾지 못했습니다.")
-        else:
-            cols = st.columns(len(subj_cols))
-            for col, (texts, label, h) in zip(cols, subj_data):
-                with col:
-                    st.markdown(f"**{label}**")
-                    if texts:
-                        for p in texts:
-                            st.markdown(f"- {p}")
-                    else:
-                        st.caption("(응답 없음)")
-                    st.markdown("**핵심 키워드**")
-                    render_keywords(extract_keywords(texts))
+    # ── 2. 주관식 응답 + 키워드 ──────────────────────────────
+    st.subheader("💬 주관식 응답")
+    if not subj_cols:
+        st.info("주관식 응답 컬럼을 찾지 못했습니다.")
+    else:
+        cols = st.columns(len(subj_cols))
+        for col, (texts, label, h) in zip(cols, subj_data):
+            with col:
+                st.markdown(f"**{label}**")
+                if texts:
+                    for p in texts:
+                        st.markdown(f"- {p}")
+                else:
+                    st.caption("(응답 없음)")
+                st.markdown("**핵심 키워드**")
+                render_keywords(extract_keywords(texts))
 
-        st.divider()
+    st.divider()
 
-        # ── 3. AI 분석 요약 ───────────────────────────────────────
-        st.subheader("🤖 AI 분석 요약")
-        if ai_summary.startswith("⚠️") or ai_summary.startswith("("):
-            st.info(ai_summary)
-        else:
-            st.markdown(ai_summary)
+    # ── 3. AI 분석 요약 ───────────────────────────────────────
+    st.subheader("🤖 AI 분석 요약")
+    if ai_summary.startswith("⚠️") or ai_summary.startswith("("):
+        st.info(ai_summary)
+    else:
+        st.markdown(ai_summary)
 
-        st.divider()
+    st.divider()
 
-        # ── 4. 보고서 다운로드 ────────────────────────────────────
-        report_txt = generate_report(course_name, respondents, headers, stats_list, subj_data, ai_summary)
-        st.download_button(
-            "⬇️ 보고서 다운로드 (.txt)",
-            data=report_txt.encode("utf-8"),
-            file_name=f"{course_name}_분석보고서_{datetime.now().strftime('%Y%m%d')}.txt",
-            mime="text/plain",
+    # ── 4. 보고서 다운로드 ────────────────────────────────────
+    report_txt = generate_report(course_name, respondents, headers, stats_list, subj_data, ai_summary)
+    st.download_button(
+        "⬇️ 보고서 다운로드 (.txt)",
+        data=report_txt.encode("utf-8"),
+        file_name=f"{course_name}_분석보고서_{datetime.now().strftime('%Y%m%d')}.txt",
+        mime="text/plain",
         )
 
-elif uploaded and not course_name:
+elif form_submitted and uploaded and not course_name:
     st.info("과정명을 입력한 뒤 분석을 시작하세요.")
