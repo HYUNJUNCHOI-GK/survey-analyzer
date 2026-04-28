@@ -411,7 +411,7 @@ def generate_report(course_name, respondents, headers, stats_list, subj_data, ai
 
 # ── 메인 UI ──────────────────────────────────────────────────────
 st.title("📊 교육 만족도 설문 분석")
-st.caption("Google Forms Excel 파일을 업로드하면 자동으로 분석 보고서를 생성합니다.")
+st.caption("교육결과분석을 위해 LS팀을 위해 만들어졌습니다. 참고로 분석 시 소량의 비용이 발생하게 됩니다.")
 
 with st.form("analyze_form"):
     uploaded = st.file_uploader(
@@ -433,8 +433,7 @@ with st.form("analyze_form"):
         custom_scale = st.number_input(
             "최대 점수",
             min_value=2, max_value=100, value=5, step=1,
-            label_visibility="visible",
-            disabled=(scale_option != "직접 입력"),
+            help="'직접 입력' 선택 시 적용됩니다.",
         )
     form_submitted = st.form_submit_button("🔍 분석 시작", type="primary", use_container_width=True)
 
