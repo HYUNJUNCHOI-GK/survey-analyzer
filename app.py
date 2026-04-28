@@ -68,12 +68,23 @@ _EMPTY = {
 }
 
 _KW_STOP = {
+    # 조사
     '이', '가', '을', '를', '은', '는', '의', '에', '로', '으로', '와', '과', '도',
-    '에서', '한', '하고', '하는', '있는', '있어', '있어요', '있습니다', '좋겠습니다',
-    '같습니다', '같아요', '해주세요', '했습니다', '됩니다', '이런', '저런', '것',
-    '수', '더', '있으면', '같은', '위한', '통해', '대한', '부분', '내용',
-    '시간', '교육', '강의', '과정', '수업', '생각합니다', '것같습니다', '주세요',
-    '이라고', '이고', '에게', '부터', '까지', '처럼', '만큼', '정도',
+    '에서', '이고', '에게', '부터', '까지', '처럼', '만큼', '정도', '이라고', '이라는',
+    # 지시/관계
+    '이런', '저런', '그런', '같은', '다른', '어떤', '이번', '저번',
+    # 동사/형용사 활용형 (불용)
+    '있는', '있어', '있어요', '있습니다', '있었으면', '있으면', '있을',
+    '하고', '하는', '한', '하여', '해서', '했습니다', '하면',
+    '됩니다', '되면', '되어', '되었으면', '되었습니다',
+    '같습니다', '같아요', '같았습니다', '같았어요', '것같습니다',
+    '좋겠습니다', '좋을', '좋아요', '좋습니다',
+    '싶습니다', '싶어요', '싶은',
+    '해주세요', '주세요', '주시면', '주시기', '드립니다',
+    '생각합니다', '생각해요', '생각됩니다',
+    '것', '수', '더', '위한', '통해', '대한', '통한',
+    # 교육 관련 일반 단어 (너무 포괄적)
+    '시간', '교육', '강의', '과정', '수업', '내용', '부분',
 }
 
 _CAT_DEFS = [
@@ -85,15 +96,33 @@ _CAT_DEFS = [
 ]
 
 # ── 컬럼 자동 감지 ───────────────────────────────────────────────
+_META_KEYWORDS = {
+    'timestamp': ['타임스탬프', 'timestamp', '작성일', '제출일', '날짜', '일시', '시각'],
+    'name':      ['이름', '성함', '성명', '이름을', '성함을', 'name'],
+    'team':      ['팀', '부서', '소속', '팀명', '부서명', 'team', 'dept', '회사'],
+}
+
 def detect_columns(headers, data):
     """점수 컬럼과 주관식 컬럼을 데이터 값으로 자동 감지"""
+    from datetime import datetime as _dt
     score_cols, subj_cols = [], []
     for i, h in enumerate(headers):
         if h is None:
             continue
+        h_l = str(h).lower()
+
+        # 메타데이터 컬럼(타임스탬프/이름/팀) 제외
+        if any(k in h_l for keys in _META_KEYWORDS.values() for k in keys):
+            continue
+
         vals = [r[i] for r in data if len(r) > i and r[i] is not None]
         if not vals:
             continue
+
+        # datetime 객체 → 제외
+        if any(isinstance(v, _dt) for v in vals):
+            continue
+
         numeric = [v for v in vals if isinstance(v, (int, float))]
 
         # 70% 이상 숫자 + 범위 1-5 → 점수 컬럼
@@ -101,17 +130,21 @@ def detect_columns(headers, data):
             score_cols.append(i)
             continue
 
-        # 평균 길이 6자 이상 텍스트 → 주관식
+        # 고유값 비율 낮으면 카테고리형 → 제외 (팀명 등 중복값)
+        unique_ratio = len(set(str(v).strip() for v in vals)) / len(vals)
+        if unique_ratio < 0.5 and len(vals) > 3:
+            continue
+
+        # 평균 길이 10자 이상 텍스트 → 주관식
         texts = [str(v).strip() for v in vals if str(v).strip().lower() not in _EMPTY]
-        if texts and sum(len(t) for t in texts) / len(texts) >= 6:
-            h_l = str(h).lower()
+        if texts and sum(len(t) for t in texts) / len(texts) >= 10:
             if any(k in h_l for k in ['좋은', '장점', '긍정', '강점', 'good']):
                 label = "👍 좋은 점"
             elif any(k in h_l for k in ['개선', '단점', '부족', '불만', '아쉬', 'improve']):
                 label = "🔧 개선 점"
             else:
                 label = "💡 기타 의견"
-            subj_cols.append((i, label, h))
+            subj_cols.append((i, label, str(h)))
     return score_cols, subj_cols
 
 
@@ -149,10 +182,20 @@ def score_stats(data, score_cols):
 
 
 # ── 키워드 추출 ──────────────────────────────────────────────────
+_KW_STOP_ENDINGS = (
+    '습니다', '었으면', '겠습니다', '이에요', '예요', '아요', '어요',
+    '같아요', '같습니다', '같았습니다', '것같습니다',
+)
+
 def extract_keywords(texts, top_n=8):
     words = []
     for t in texts:
-        words.extend(w for w in re.findall(r'[가-힣]{2,}', t) if w not in _KW_STOP)
+        for w in re.findall(r'[가-힣]{2,}', t):
+            if w in _KW_STOP:
+                continue
+            if any(w.endswith(e) for e in _KW_STOP_ENDINGS):
+                continue
+            words.append(w)
     return Counter(words).most_common(top_n)
 
 
@@ -211,14 +254,28 @@ def short_q(h, n=28):
     return s[:n] + "…" if len(s) > n else s
 
 
+def _relative_color(avg, min_avg, max_avg):
+    """데이터 범위 내 상대 위치로 색상 결정"""
+    if max_avg == min_avg:
+        return "#f39c12"
+    pct = (avg - min_avg) / (max_avg - min_avg)
+    if pct >= 0.7:
+        return "#27ae60"   # 상위 30% → 초록
+    elif pct <= 0.3:
+        return "#e74c3c"   # 하위 30% → 빨강
+    return "#f39c12"       # 중간 → 주황
+
+
 def make_item_bar(headers, stats_list):
     """문항별 가로 막대 차트"""
     labels, avgs, colors = [], [], []
+    all_avgs = [s["avg"] for s in stats_list]
+    min_avg, max_avg = min(all_avgs), max(all_avgs)
     for s in stats_list:
         h = headers[s["col"]] if s["col"] < len(headers) else f"Q{s['col']}"
         labels.append(short_q(h))
         avgs.append(s["avg"])
-        colors.append("#27ae60" if s["avg"] >= 4.5 else ("#f39c12" if s["avg"] >= 3.5 else "#e74c3c"))
+        colors.append(_relative_color(s["avg"], min_avg, max_avg))
     fig = go.Figure(go.Bar(
         x=avgs, y=labels, orientation="h",
         marker_color=colors,
