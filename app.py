@@ -215,37 +215,14 @@ def get_word_freq(texts):
     return Counter(words)
 
 
-def render_wordcloud(texts, colormap='Blues'):
-    import io as _io
-    import matplotlib.pyplot as plt
-    from wordcloud import WordCloud
-
-    freq = get_word_freq(texts)
-    if not freq:
-        st.caption("(키워드 없음)")
-        return
-
-    font_path = _get_korean_font()
-    wc = WordCloud(
-        font_path=font_path,
-        width=500, height=280,
-        background_color='white',
-        colormap=colormap,
-        max_words=40,
-        prefer_horizontal=0.85,
-        min_font_size=10,
-    ).generate_from_frequencies(freq)
-
-    fig, ax = plt.subplots(figsize=(5, 2.8))
-    ax.imshow(wc, interpolation='bilinear')
-    ax.axis('off')
-    plt.tight_layout(pad=0)
-
-    buf = _io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    buf.seek(0)
-    st.image(buf, use_container_width=True)
+def highlight_text(text, keyword):
+    """응답 텍스트에서 키워드를 노란 형광으로 강조"""
+    import re
+    pattern = re.compile(f'({re.escape(keyword)})', re.IGNORECASE)
+    return pattern.sub(
+        r'<mark style="background:#fff176;padding:1px 4px;border-radius:3px;font-weight:bold">\1</mark>',
+        text
+    )
 
 
 # ── Claude API ───────────────────────────────────────────────────
@@ -464,19 +441,36 @@ if form_submitted and uploaded and course_name:
     if not subj_cols:
         st.info("주관식 응답 컬럼을 찾지 못했습니다.")
     else:
-        # 컬럼별 워드클라우드 색상
-        _wc_colors = ['Greens', 'Reds', 'Blues', 'Purples', 'Oranges']
         cols = st.columns(len(subj_cols))
         for i, (col, (texts, label, h)) in enumerate(zip(cols, subj_data)):
             with col:
                 st.markdown(f"**{label}**")
+
+                # 핵심 키워드 pills
+                freq = get_word_freq(texts)
+                top_kws = [w for w, _ in freq.most_common(8)]
+                selected_kw = None
+                if top_kws:
+                    fmt = {w: f"{w}  {freq[w]}" for w in top_kws}
+                    selected_kw = st.pills(
+                        "핵심 키워드",
+                        options=top_kws,
+                        format_func=lambda w, f=fmt: f[w],
+                        key=f"pills_{i}",
+                    )
+
+                # 응답 목록 (키워드 선택 시 형광 하이라이트)
                 if texts:
                     for p in texts:
-                        st.markdown(f"- {p}")
+                        if selected_kw and selected_kw in p:
+                            st.markdown(
+                                f'- {highlight_text(p, selected_kw)}',
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(f"- {p}")
                 else:
                     st.caption("(응답 없음)")
-                st.markdown("**워드클라우드**")
-                render_wordcloud(texts, colormap=_wc_colors[i % len(_wc_colors)])
 
     st.divider()
 
