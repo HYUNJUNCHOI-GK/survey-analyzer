@@ -370,47 +370,75 @@ st.title("📊 교육 만족도 설문 분석")
 st.caption("Google Forms Excel 파일을 업로드하면 자동으로 분석 보고서를 생성합니다.")
 
 with st.form("analyze_form"):
-    uploaded = st.file_uploader("📂 설문 Excel 파일 업로드 (.xlsx)", type=["xlsx"])
+    uploaded = st.file_uploader(
+        "📂 파일을 드래그하거나 클릭하여 업로드 (.xlsx)",
+        type=["xlsx"],
+        help="Google Forms에서 내보낸 Excel 파일을 올려주세요.",
+    )
     course_name = st.text_input("과정명", placeholder="예: AI 기반 업무방식 전환 실무 (AI-DLC 입문)")
     form_submitted = st.form_submit_button("🔍 분석 시작", type="primary", use_container_width=True)
 
-if form_submitted and uploaded and course_name:
+# ── 폼 제출 시 분석 실행 → session_state 저장 ─────────────────────
+if form_submitted:
+    if not uploaded:
+        st.warning("파일을 먼저 업로드해주세요.")
+    elif not course_name:
+        st.warning("과정명을 입력해주세요.")
+    else:
+        with st.spinner("데이터 로드 및 컬럼 감지 중…"):
+            headers, data = load_excel(uploaded.read())
+            respondents = len(data)
+            score_cols, subj_cols = detect_columns(headers, data)
 
-    with st.spinner("데이터 로드 및 컬럼 감지 중…"):
-        headers, data = load_excel(uploaded.read())
-        respondents = len(data)
-        score_cols, subj_cols = detect_columns(headers, data)
+        if not score_cols:
+            st.error("점수 컬럼(1~5점 숫자)을 찾지 못했습니다. 파일 형식을 확인해주세요.")
+            st.stop()
 
-    if not score_cols:
-        st.error("점수 컬럼(1~5점 숫자)을 찾지 못했습니다. 파일 형식을 확인해주세요.")
-        st.stop()
+        stats_list = score_stats(data, score_cols)
+        subj_data = [(get_subj(data, col), label, h) for col, label, h in subj_cols]
 
-    stats_list = score_stats(data, score_cols)
-    subj_data = [(get_subj(data, col), label, h) for col, label, h in subj_cols]
+        ai_summary = "(AI 분석 생략)"
+        if use_ai:
+            if not api_key:
+                ai_summary = "⚠️ API Key를 입력하면 AI 분석을 사용할 수 있습니다."
+            else:
+                with st.spinner("Claude AI 분석 중… (10~20초 소요)"):
+                    try:
+                        ai_summary = call_claude(course_name, subj_data, api_key)
+                    except Exception as e:
+                        ai_summary = f"⚠️ AI 분석 실패: {e}"
 
-    # AI 분석
-    ai_summary = "(AI 분석 생략)"
-    if use_ai:
-        if not api_key:
-            ai_summary = "⚠️ API Key를 입력하면 AI 분석을 사용할 수 있습니다."
-        else:
-            with st.spinner("Claude AI 분석 중… (10~20초 소요)"):
-                try:
-                    ai_summary = call_claude(course_name, subj_data, api_key)
-                except Exception as e:
-                    ai_summary = f"⚠️ AI 분석 실패: {e}"
+        st.session_state['_analysis'] = {
+            'course_name': course_name,
+            'respondents': respondents,
+            'headers': list(headers),
+            'stats_list': stats_list,
+            'subj_data': subj_data,
+            'subj_cols': subj_cols,
+            'ai_summary': ai_summary,
+        }
 
-    # ── 요약 지표 ─────────────────────────────────────────────
+# ── 결과 표시 (session_state 기반 → pills 클릭 후에도 유지) ────────
+if '_analysis' in st.session_state:
+    r = st.session_state['_analysis']
+    course_name  = r['course_name']
+    respondents  = r['respondents']
+    headers      = r['headers']
+    stats_list   = r['stats_list']
+    subj_data    = r['subj_data']
+    subj_cols    = r['subj_cols']
+    ai_summary   = r['ai_summary']
+
     st.success(f"✅ 분석 완료 — 응답자 {respondents}명 / 점수 문항 {len(stats_list)}개 / 주관식 {len(subj_cols)}개")
     st.divider()
 
     all_avgs = [s["avg"] for s in stats_list]
-    overall = round(statistics.mean(all_avgs), 2) if all_avgs else 0
+    overall  = round(statistics.mean(all_avgs), 2) if all_avgs else 0
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("전체 평균", f"{overall:.2f} / 5.00")
-    c2.metric("응답자 수", f"{respondents}명")
-    c3.metric("최고 항목", f"{max(all_avgs):.2f}" if all_avgs else "-")
-    c4.metric("최저 항목", f"{min(all_avgs):.2f}" if all_avgs else "-")
+    c1.metric("전체 평균",  f"{overall:.2f} / 5.00")
+    c2.metric("응답자 수",  f"{respondents}명")
+    c3.metric("최고 항목",  f"{max(all_avgs):.2f}" if all_avgs else "-")
+    c4.metric("최저 항목",  f"{min(all_avgs):.2f}" if all_avgs else "-")
     st.divider()
 
     # ── 1. 객관식 점수 ────────────────────────────────────────
@@ -446,8 +474,7 @@ if form_submitted and uploaded and course_name:
             with col:
                 st.markdown(f"**{label}**")
 
-                # 핵심 키워드 pills
-                freq = get_word_freq(texts)
+                freq    = get_word_freq(texts)
                 top_kws = [w for w, _ in freq.most_common(8)]
                 selected_kw = None
                 if top_kws:
@@ -459,7 +486,6 @@ if form_submitted and uploaded and course_name:
                         key=f"pills_{i}",
                     )
 
-                # 응답 목록 (키워드 선택 시 형광 하이라이트)
                 if texts:
                     for p in texts:
                         if selected_kw and selected_kw in p:
@@ -490,7 +516,4 @@ if form_submitted and uploaded and course_name:
         data=report_txt.encode("utf-8"),
         file_name=f"{course_name}_분석보고서_{datetime.now().strftime('%Y%m%d')}.txt",
         mime="text/plain",
-        )
-
-elif form_submitted and uploaded and not course_name:
-    st.info("과정명을 입력한 뒤 분석을 시작하세요.")
+    )
