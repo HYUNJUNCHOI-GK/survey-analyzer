@@ -183,13 +183,27 @@ def score_stats(data, score_cols):
     return results
 
 
-# ── 키워드 추출 ──────────────────────────────────────────────────
+# ── 키워드 추출 + 워드클라우드 ──────────────────────────────────────
 _KW_STOP_ENDINGS = (
     '습니다', '었으면', '겠습니다', '이에요', '예요', '아요', '어요',
     '같아요', '같습니다', '같았습니다', '것같습니다',
 )
 
-def extract_keywords(texts, top_n=8):
+def _get_korean_font():
+    """OS별 한국어 폰트 경로"""
+    candidates = [
+        '/usr/share/fonts/truetype/nanum/NanumGothic.ttf',   # Linux (Streamlit Cloud)
+        '/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf',
+        'C:/Windows/Fonts/malgun.ttf',                        # Windows 맑은고딕
+        'C:/Windows/Fonts/gulim.ttc',                         # Windows 굴림
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def get_word_freq(texts):
     words = []
     for t in texts:
         for w in re.findall(r'[가-힣]{2,}', t):
@@ -198,21 +212,40 @@ def extract_keywords(texts, top_n=8):
             if any(w.endswith(e) for e in _KW_STOP_ENDINGS):
                 continue
             words.append(w)
-    return Counter(words).most_common(top_n)
+    return Counter(words)
 
 
-def render_keywords(keywords):
-    if not keywords:
+def render_wordcloud(texts, colormap='Blues'):
+    import io as _io
+    import matplotlib.pyplot as plt
+    from wordcloud import WordCloud
+
+    freq = get_word_freq(texts)
+    if not freq:
         st.caption("(키워드 없음)")
         return
-    palette = ['#e3f2fd', '#f3e5f5', '#e8f5e9', '#fff8e1', '#fce4ec', '#e0f7fa', '#ede7f6', '#f9fbe7']
-    tags = [
-        f'<span style="background:{palette[i%len(palette)]};padding:3px 10px;'
-        f'border-radius:14px;margin:2px;display:inline-block;font-size:0.86em">'
-        f'<b>{w}</b>&nbsp;{c}</span>'
-        for i, (w, c) in enumerate(keywords)
-    ]
-    st.markdown(" ".join(tags), unsafe_allow_html=True)
+
+    font_path = _get_korean_font()
+    wc = WordCloud(
+        font_path=font_path,
+        width=500, height=280,
+        background_color='white',
+        colormap=colormap,
+        max_words=40,
+        prefer_horizontal=0.85,
+        min_font_size=10,
+    ).generate_from_frequencies(freq)
+
+    fig, ax = plt.subplots(figsize=(5, 2.8))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    plt.tight_layout(pad=0)
+
+    buf = _io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    st.image(buf, use_container_width=True)
 
 
 # ── Claude API ───────────────────────────────────────────────────
@@ -431,8 +464,10 @@ if form_submitted and uploaded and course_name:
     if not subj_cols:
         st.info("주관식 응답 컬럼을 찾지 못했습니다.")
     else:
+        # 컬럼별 워드클라우드 색상
+        _wc_colors = ['Greens', 'Reds', 'Blues', 'Purples', 'Oranges']
         cols = st.columns(len(subj_cols))
-        for col, (texts, label, h) in zip(cols, subj_data):
+        for i, (col, (texts, label, h)) in enumerate(zip(cols, subj_data)):
             with col:
                 st.markdown(f"**{label}**")
                 if texts:
@@ -440,8 +475,8 @@ if form_submitted and uploaded and course_name:
                         st.markdown(f"- {p}")
                 else:
                     st.caption("(응답 없음)")
-                st.markdown("**핵심 키워드**")
-                render_keywords(extract_keywords(texts))
+                st.markdown("**워드클라우드**")
+                render_wordcloud(texts, colormap=_wc_colors[i % len(_wc_colors)])
 
     st.divider()
 
