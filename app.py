@@ -127,19 +127,25 @@ def detect_columns(headers, data):
 
         numeric = [v for v in vals if isinstance(v, (int, float))]
 
-        # 70% 이상 숫자 + 범위 1-5 → 점수 컬럼
-        if len(numeric) / len(vals) >= 0.7 and numeric and min(numeric) >= 1 and max(numeric) <= 5:
+        # 순번 컬럼 제외: 모든 값이 고유하고 1부터 연속된 정수
+        if numeric and len(numeric) == len(vals):
+            sorted_n = sorted(numeric)
+            if sorted_n == list(range(1, len(sorted_n) + 1)):
+                continue
+
+        # 70% 이상 숫자 + 범위 1-10 → 점수 컬럼 (1~5, 1~7, 1~10 모두 지원)
+        if len(numeric) / len(vals) >= 0.7 and numeric and min(numeric) >= 1 and max(numeric) <= 10:
             score_cols.append(i)
             continue
 
-        # 고유값 비율 낮으면 카테고리형 → 제외 (팀명 등 중복값)
+        # 고유값 비율 낮으면 카테고리형 → 제외 (팀명, 직무 등 중복값)
         unique_ratio = len(set(str(v).strip() for v in vals)) / len(vals)
         if unique_ratio < 0.5 and len(vals) > 3:
             continue
 
-        # 평균 길이 10자 이상 텍스트 → 주관식
+        # 평균 길이 8자 이상 텍스트 → 주관식
         texts = [str(v).strip() for v in vals if str(v).strip().lower() not in _EMPTY]
-        if texts and sum(len(t) for t in texts) / len(texts) >= 10:
+        if texts and sum(len(t) for t in texts) / len(texts) >= 8:
             if any(k in h_l for k in ['좋은', '장점', '긍정', '강점', 'good']):
                 label = "👍 좋은 점"
             elif any(k in h_l for k in ['개선', '단점', '부족', '불만', '아쉬', 'improve']):
@@ -155,7 +161,42 @@ def load_excel(file_bytes):
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
     ws = wb.active
     rows = list(ws.iter_rows(values_only=True))
-    return rows[0], rows[1:]
+
+    # 헤더 행 자동 탐지: 문자열 값이 3개 이상인 첫 번째 행
+    header_idx = 0
+    for i, row in enumerate(rows):
+        text_cnt = sum(
+            1 for c in row
+            if isinstance(c, str) and len(c.strip()) > 1 and not c.startswith('=')
+        )
+        if text_cnt >= 3:
+            header_idx = i
+            break
+
+    headers = rows[header_idx]
+
+    # 데이터 행 필터링
+    data = []
+    for row in rows[header_idx + 1:]:
+        # 수식·빈 값 제외 후 유효 셀 수 확인
+        valid = [
+            c for c in row
+            if c is not None
+            and str(c).strip() not in ('', )
+            and not str(c).startswith('=')
+        ]
+        if len(valid) < 2:
+            continue
+        # 척도 표시 행 제외 ("1 ~ 7", "1~5" 형태)
+        scale_cnt = sum(
+            1 for c in row
+            if isinstance(c, str) and re.search(r'\d+\s*[~～]\s*\d+', c)
+        )
+        if scale_cnt >= 1:
+            continue
+        data.append(row)
+
+    return headers, data
 
 
 def get_subj(data, col):
@@ -283,6 +324,7 @@ def make_item_bar(headers, stats_list):
     labels, avgs, colors = [], [], []
     all_avgs = [s["avg"] for s in stats_list]
     min_avg, max_avg = min(all_avgs), max(all_avgs)
+    max_scale = max(s["max"] for s in stats_list)  # 실제 척도 최대값 (5점/7점 등)
     for s in stats_list:
         h = headers[s["col"]] if s["col"] < len(headers) else f"Q{s['col']}"
         labels.append(short_q(h))
@@ -294,7 +336,7 @@ def make_item_bar(headers, stats_list):
         text=[f"{v:.2f}" for v in avgs], textposition="outside",
     ))
     fig.update_layout(
-        xaxis=dict(range=[0, 5.8], title="평균 점수 (5점 만점)"),
+        xaxis=dict(range=[0, max_scale + 0.8], title=f"평균 점수 ({max_scale}점 만점)"),
         yaxis=dict(autorange="reversed"),
         margin=dict(l=20, r=60, t=10, b=30),
         height=max(300, len(labels) * 40),
@@ -305,6 +347,9 @@ def make_item_bar(headers, stats_list):
 def make_category_bar(stats_list):
     """카테고리별 평균 점수 세로 막대 차트 (방사형 대체)"""
     cats, avgs, colors = [], [], []
+    max_scale = max(s["max"] for s in stats_list) if stats_list else 5
+    hi_thr = max_scale * 0.9   # 상위: 전체 척도의 90%
+    lo_thr = max_scale * 0.7   # 하위: 전체 척도의 70%
     for cat_name, s, e in _CAT_DEFS:
         items = stats_list[s:e]
         if not items:
@@ -312,8 +357,8 @@ def make_category_bar(stats_list):
         avg = round(statistics.mean([i["avg"] for i in items]), 2)
         cats.append(cat_name)
         avgs.append(avg)
-        colors.append("#27ae60" if avg >= 4.5 else ("#f39c12" if avg >= 3.5 else "#e74c3c"))
-    if not cats:
+        colors.append("#27ae60" if avg >= hi_thr else ("#f39c12" if avg >= lo_thr else "#e74c3c"))
+    if len(cats) < 2:   # 카테고리가 1개 이하면 의미 없음 → 숨김
         return None
     fig = go.Figure(go.Bar(
         x=cats, y=avgs,
@@ -322,7 +367,7 @@ def make_category_bar(stats_list):
         width=0.5,
     ))
     fig.update_layout(
-        yaxis=dict(range=[0, 5.5], title="평균 점수"),
+        yaxis=dict(range=[0, max_scale + 0.5], title="평균 점수"),
         margin=dict(l=20, r=20, t=20, b=30),
         height=300,
     )
